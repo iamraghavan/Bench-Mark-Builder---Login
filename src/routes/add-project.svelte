@@ -1,173 +1,175 @@
 <script>
-    // Import statements
-    import { onMount } from 'svelte';
-    import { getAuth, onAuthStateChanged, signOut } from 'firebase/auth';
-    import {
-        getStorage,
-        ref as storageRef,
-        uploadBytes,
-        getDownloadURL,
-    } from 'firebase/storage';
-    import { push, ref as rtdbRef, set, getDatabase, onValue } from 'firebase/database';
-    import { child, remove } from 'firebase/database';
-    import Swal from 'sweetalert2';
-    import { goto } from '@sapper/app';
-    import firebaseApp from '../firebase';
+  // Import statements
+  import { onMount } from 'svelte';
+  import { getAuth, onAuthStateChanged, signOut } from 'firebase/auth';
+  import {
+    getStorage,
+    ref as storageRef,
+    uploadBytes,
+    getDownloadURL,
+  } from 'firebase/storage';
+  import { push, ref as rtdbRef, set, getDatabase, onValue } from 'firebase/database';
+  import Swal from 'sweetalert2';
+  import { goto } from '@sapper/app';
+  import firebaseApp from '../firebase';
+  import Compressor from 'compressorjs'; // Import compressorjs library
 
-    let istTime = '';
-    let isEditMode = false;
+  let istTime = '';
+  let isEditMode = false;
 
-    function updateClock() {
-        const now = new Date();
-        const options = {
-            timeZone: 'Asia/Kolkata',
-            hour: 'numeric',
-            minute: 'numeric',
-            second: 'numeric',
-            day: 'numeric',
-            month: 'long',
-            year: 'numeric'
-        };
+  function updateClock() {
+    const now = new Date();
+    const options = {
+      timeZone: 'Asia/Kolkata',
+      hour: 'numeric',
+      minute: 'numeric',
+      second: 'numeric',
+      day: 'numeric',
+      month: 'long',
+      year: 'numeric',
+    };
 
-        istTime = new Intl.DateTimeFormat('en-US', options).format(now);
-    }
+    istTime = new Intl.DateTimeFormat('en-US', options).format(now);
+  }
 
-    onMount(() => {
-        // Update the clock every second
-        const interval = setInterval(updateClock, 1000);
+  onMount(() => {
+    // Update the clock every second
+    const interval = setInterval(updateClock, 1000);
 
-        // Clean up the interval on component destroy
-        return () => clearInterval(interval);
+    // Clean up the interval on component destroy
+    return () => clearInterval(interval);
 
-        // Initial update
-        updateClock();
+    // Initial update
+    updateClock();
+  });
+
+  const auth = getAuth(firebaseApp);
+  const storage = getStorage(firebaseApp);
+  const db = getDatabase(firebaseApp);
+
+  let project = {
+    title: '',
+    dmcaApproval: false,
+    landApproval: false,
+    buildUpArea: 0,
+    unitType: '',
+    lochighlight: '',
+    highlight: '',
+    projectStatus: '',
+    landmark: '',
+    images: [],
+  };
+
+  let storedData = [];
+  let isSubmitting = false;
+
+  onMount(() => {
+    // Check if the user is authenticated
+    onAuthStateChanged(auth, (user) => {
+      if (!user) {
+        goto('/');
+      }
     });
 
-    const auth = getAuth(firebaseApp);
-    const storage = getStorage(firebaseApp);
-    const db = getDatabase(firebaseApp);
+    // Update the clock every second
+    const interval = setInterval(updateClock, 1000);
 
-    let project = {
+    // Cleanup function to clear the interval on component destroy
+    const cleanup = () => clearInterval(interval);
+
+    // Initial update
+    updateClock();
+
+    const dbRef = rtdbRef(db, 'projects');
+    onValue(dbRef, (snapshot) => {
+      storedData = [];
+      snapshot.forEach((childSnapshot) => {
+        storedData.push({ id: childSnapshot.key, ...childSnapshot.val() });
+      });
+
+      console.log('Fetched data:', storedData);
+      console.log('Data length:', storedData.length);
+    });
+
+    // Return the cleanup function
+    return cleanup;
+  });
+
+  const handleLogout = async () => {
+    await signOut(auth);
+    goto('/');
+  };
+
+  const handleAddProject = async () => {
+    if (isSubmitting) return;
+    isSubmitting = true;
+
+    try {
+      // Form Validation
+      if (!validateForm()) {
+        throw new Error('Please fill out all required fields.');
+      }
+
+      const downloadURLs = [];
+
+      // Compress and upload project images to Firebase Storage using compressorjs
+      for (const file of project.images) {
+        const compressedBlob = await compressImage(file);
+        const fileName = `Projects/${project.title}/${getFormattedDate()}-${project.landmark.replace(
+          /\s/g,
+          ''
+        )}-${file.name}`;
+        const storageRefVar = storageRef(storage, fileName);
+        await uploadBytes(storageRefVar, compressedBlob);
+        const downloadURL = await getDownloadURL(storageRefVar);
+        downloadURLs.push(downloadURL);
+      }
+
+      // Save project data to Firebase Realtime Database
+      const dbRef = rtdbRef(db, 'projects');
+
+      // If project has an ID, update the existing project
+      if (project.id) {
+        const projectRef = child(dbRef, project.id);
+        await set(projectRef, { ...project, images: downloadURLs });
+      } else {
+        // If project doesn't have an ID, add a new project
+        const newProjectRef = push(dbRef);
+        await set(newProjectRef, { ...project, images: downloadURLs });
+      }
+
+      // Reset the form after successful upload
+      project = {
         title: '',
         dmcaApproval: false,
         landApproval: false,
         buildUpArea: 0,
         unitType: '',
         lochighlight: '',
-        highlight : '',
+        highlight: '',
         projectStatus: '',
         landmark: '',
         images: [],
-    };
+      };
 
-    let storedData = [];
-    let isSubmitting = false;
-
-    onMount(() => {
-        // Check if the user is authenticated
-        onAuthStateChanged(auth, (user) => {
-    if (!user) {
-      goto('/');
+      Swal.fire({
+        icon: 'success',
+        title: 'Project added/updated successfully!',
+      });
+    } catch (error) {
+      console.error('Error adding/updating project:', error);
+      Swal.fire({
+        icon: 'error',
+        title: 'Error adding/updating project',
+        text: error.message || 'Please try again.',
+      });
+    } finally {
+      isSubmitting = false;
     }
-  });
+  };
 
-        // Update the clock every second
-        const interval = setInterval(updateClock, 1000);
 
-        // Cleanup function to clear the interval on component destroy
-        const cleanup = () => clearInterval(interval);
-
-        // Initial update
-        updateClock();
-
-        const dbRef = rtdbRef(db, 'projects');
-        onValue(dbRef, (snapshot) => {
-            storedData = [];
-            snapshot.forEach((childSnapshot) => {
-                storedData.push({ id: childSnapshot.key, ...childSnapshot.val() });
-            });
-
-            console.log('Fetched data:', storedData);
-            console.log('Data length:', storedData.length);
-        });
-
-        // Return the cleanup function
-        return cleanup;
-    });
-
-    const handleLogout = async () => {
-        await signOut(auth);
-        goto('/');
-    };
-
-    const handleAddProject = async () => {
-        if (isSubmitting) return;
-        isSubmitting = true;
-
-        try {
-            // Form Validation
-            if (!validateForm()) {
-                throw new Error('Please fill out all required fields.');
-            }
-
-            const downloadURLs = [];
-
-            // Upload project images to Firebase Storage
-            for (const file of project.images) {
-                const fileName = `Projects/${project.title}/${getFormattedDate()}-${project.landmark.replace(
-                    /\s/g,
-                    ''
-                )}-${file.name}`;
-                const storageRefVar = storageRef(storage, fileName);
-                await uploadBytes(storageRefVar, file);
-                const downloadURL = await getDownloadURL(storageRefVar);
-                downloadURLs.push(downloadURL);
-            }
-
-            // Save project data to Firebase Realtime Database
-            const dbRef = rtdbRef(db, 'projects');
-
-            // If project has an ID, update the existing project
-            if (project.id) {
-                const projectRef = child(dbRef, project.id);
-                await set(projectRef, { ...project, images: downloadURLs });
-            } else {
-                // If project doesn't have an ID, add a new project
-                const newProjectRef = push(dbRef);
-                await set(newProjectRef, { ...project, images: downloadURLs });
-            }
-
-            // Reset the form after successful upload
-            project = {
-                title: '',
-                dmcaApproval: false,
-                landApproval: false,
-                buildUpArea: 0,
-                unitType: '',
-                lochighlight: '',
-                highlight : '',
-                projectStatus: '',
-                landmark: '',
-                images: [],
-            };
-
-            Swal.fire({
-                icon: 'success',
-                title: 'Project added/updated successfully!',
-            });
-        } catch (error) {
-            console.error('Error adding/updating project:', error);
-            Swal.fire({
-                icon: 'error',
-                title: 'Error adding/updating project',
-                text: error.message || 'Please try again.',
-            });
-        } finally {
-            isSubmitting = false;
-        }
-    };
-
-    const handleUpdateProject = async () => {
+  const handleUpdateProject = async () => {
         // The code for updating a project goes here
         // Similar to the logic in handleAddProject
         // Ensure you perform the necessary validations, image uploads, and database updates
@@ -231,70 +233,88 @@
         }
     };
 
-    const getFormattedDate = () => {
-        const now = new Date();
-        const dd = String(now.getDate()).padStart(2, '0');
-        const mm = String(now.getMonth() + 1).padStart(2, '0');
-        const yy = String(now.getFullYear()).slice(-2);
-        return `${dd}${mm}${yy}`;
-    };
+  // Helper function to compress an image using compressorjs
+  const compressImage = (file) => {
+    return new Promise((resolve, reject) => {
+      new Compressor(file, {
+        quality: 0.8, // Adjust quality as needed
+        maxWidth: 800, // Adjust max width as needed
+        maxHeight: 800, // Adjust max height as needed
+        success(result) {
+          resolve(result);
+        },
+        error(error) {
+          reject(error);
+        },
+      });
+    });
+  };
 
-    const handleEdit = async (id) => {
-        // Implement edit functionality
-        const projectToEdit = storedData.find((item) => item.id === id);
+  const getFormattedDate = () => {
+    const now = new Date();
+    const dd = String(now.getDate()).padStart(2, '0');
+    const mm = String(now.getMonth() + 1).padStart(2, '0');
+    const yy = String(now.getFullYear()).slice(-2);
+    return `${dd}${mm}${yy}`;
+  };
 
-        // Populate the form with the data of the selected project
-        project = { ...projectToEdit };
+  const handleEdit = async (id) => {
+    // Implement edit functionality
+    const projectToEdit = storedData.find((item) => item.id === id);
 
-        // Enter edit mode
-        isEditMode = true;
-    };
+    // Populate the form with the data of the selected project
+    project = { ...projectToEdit };
 
-    const handleDelete = async (id) => {
-        // Implement delete functionality
-        try {
-            const dbRef = rtdbRef(db, 'projects');
-            const projectRef = child(dbRef, id);
-            await remove(projectRef);
+    // Enter edit mode
+    isEditMode = true;
+  };
 
-            // Remove the deleted project from the storedData array
-            storedData = storedData.filter((item) => item.id !== id);
+  const handleDelete = async (id) => {
+    // Implement delete functionality
+    try {
+      const dbRef = rtdbRef(db, 'projects');
+      const projectRef = child(dbRef, id);
+      await remove(projectRef);
 
-            Swal.fire({
-                icon: 'success',
-                title: 'Project deleted successfully!',
-            });
-        } catch (error) {
-            console.error('Error deleting project:', error);
-            Swal.fire({
-                icon: 'error',
-                title: 'Error deleting project',
-                text: 'Please try again.',
-            });
-        }
-    };
+      // Remove the deleted project from the storedData array
+      storedData = storedData.filter((item) => item.id !== id);
 
-    const handleAction = (action, id) => {
-        if (action === 'edit') {
-            handleEdit(id);
-        } else if (action === 'delete') {
-            handleDelete(id);
-        }
-    };
+      Swal.fire({
+        icon: 'success',
+        title: 'Project deleted successfully!',
+      });
+    } catch (error) {
+      console.error('Error deleting project:', error);
+      Swal.fire({
+        icon: 'error',
+        title: 'Error deleting project',
+        text: 'Please try again.',
+      });
+    }
+  };
 
-    const validateForm = () => {
-        return (
-            project.title &&
-            project.buildUpArea &&
-            project.unitType &&
-            project.projectStatus &&
-            project.lochighlight &&
-            project.highlight &&
-            project.landmark &&
-            project.images.length > 0
-        );
-    };
+  const handleAction = (action, id) => {
+    if (action === 'edit') {
+      handleEdit(id);
+    } else if (action === 'delete') {
+      handleDelete(id);
+    }
+  };
+
+  const validateForm = () => {
+    return (
+      project.title &&
+      project.buildUpArea &&
+      project.unitType &&
+      project.projectStatus &&
+      project.lochighlight &&
+      project.highlight &&
+      project.landmark &&
+      project.images.length > 0
+    );
+  };
 </script>
+
 
  
 <div>
